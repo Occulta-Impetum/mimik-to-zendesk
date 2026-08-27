@@ -6,21 +6,21 @@ Converts a Mimik HTML export into a clean article package, uploads extracted
 screenshots to Zendesk Guide Media, and writes Zendesk-ready article HTML.
 
 Usage:
-    python mimik_converter.py "C:\path\to\article.html"
+    python mimik_converter.py "C:\\path\\to\\article.html"
 
 Windows drag-and-drop:
     Drop one or more Mimik .html files onto a launcher such as:
         Convert Mimik HTML.bat
 
 Output:
-    <script directory>\Converted Mimik HTML\<Article Name>\
+    <script directory>\\Converted Mimik HTML\\<Article Name>\\
         article-body.html
         preview.html
         manifest.json
         media-manifest.json
         conversion-summary.txt
-        images\
-        source\
+        images\\
+        source\\
             original.html
 """
 
@@ -32,6 +32,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -68,6 +69,11 @@ except ImportError as exc:
 OUTPUT_ROOT_NAME = "Converted Mimik HTML"
 
 
+def progress(message: str) -> None:
+    """Print progress immediately so drag-and-drop BAT runs never look frozen."""
+    print(message, flush=True)
+
+
 def safe_folder_name(name: str) -> str:
     """Make a Windows-safe folder name while keeping it readable."""
     name = html.unescape(name).strip()
@@ -90,10 +96,7 @@ def get_article_title(soup: BeautifulSoup, source: Path) -> str:
 
 
 def decode_data_image(data_uri: str, dest_png: Path) -> dict:
-    """
-    Decode a data:image URI and save it as PNG.
-    Returns basic image metadata.
-    """
+    """Decode a data:image URI, normalize it to PNG, and return metadata."""
     header, payload = data_uri.split(",", 1)
     mime_match = re.match(r"data:(image/[^;]+);base64", header, re.I)
     mime = mime_match.group(1).lower() if mime_match else "image/unknown"
@@ -135,10 +138,7 @@ def clean_text(text: str) -> str:
 
 
 def paragraphs_from_text(text: str) -> str:
-    """
-    Turn logical Mimik note/callout text into plain body paragraphs.
-    Mimik's color/style is intentionally discarded.
-    """
+    """Turn logical Mimik note/callout text into plain body paragraphs."""
     lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
     if not lines:
         return ""
@@ -151,19 +151,7 @@ def create_article_body(
     images_dir: Path,
     manifest: dict,
 ) -> str:
-    """
-    Convert Mimik's body into simple article markup with local image paths.
-
-    Supported Mimik blocks:
-      - data-block="heading"
-      - data-block="callout"
-      - data-step="<number>"
-
-    Mimik callout/note colors and box formatting are intentionally removed.
-    Their text is preserved as normal body paragraphs in the same position.
-
-    Everything Mimik uses for its cover/footer/print layout is excluded.
-    """
+    """Convert Mimik's body into simple article markup with local image paths."""
     body = soup.body
     if body is None:
         raise ValueError("No <body> element was found in the Mimik HTML.")
@@ -172,8 +160,6 @@ def create_article_body(
     image_index = 0
 
     sections = body.find_all("section", recursive=False)
-
-    # Fall back in case a later Mimik version adds another wrapper.
     if not sections:
         sections = body.find_all("section")
 
@@ -186,15 +172,11 @@ def create_article_body(
             if not heading:
                 continue
 
-            # Major numbered headings become H2.
-            # Other headings become H3.
             tag = "h2" if re.match(r"^\d+\.", heading) else "h3"
             output.append(f"<{tag}>{html.escape(heading)}</{tag}>")
             continue
 
         if block == "callout":
-            # All Mimik note/callout styles are flattened to normal body text.
-            # This avoids carrying Mimik's color choices into Zendesk.
             text = clean_text(section.get_text("\n", strip=True))
             if text:
                 output.append(paragraphs_from_text(text))
@@ -230,7 +212,6 @@ def create_article_body(
                     dest_name = f"image-{image_index:02d}.png"
 
                 dest_path = images_dir / dest_name
-
                 image_meta = decode_data_image(img["src"], dest_path)
                 image_meta["step"] = str(step_num)
                 alt = clean_text(img.get("alt") or f"Step {step_num}")
@@ -261,10 +242,7 @@ def upload_images_to_zendesk(
     images_dir: Path,
     image_entries: list[dict],
 ) -> tuple[str, dict]:
-    """
-    Upload extracted screenshots to Zendesk Guide Media and replace only the
-    local image src values in the Zendesk-ready article body.
-    """
+    """Upload screenshots and replace local src values with Zendesk paths."""
     media_manifest = {
         "provider": "Zendesk Guide Media",
         "uploaded_at": datetime.now().isoformat(timespec="seconds"),
@@ -272,15 +250,28 @@ def upload_images_to_zendesk(
     }
 
     if not image_entries:
+        progress("[3/5] No screenshots to upload to Zendesk.")
         media_manifest["image_count"] = 0
         return local_article_body, media_manifest
 
+    progress("[3/5] Authenticating with Zendesk...")
+    auth_started = time.perf_counter()
     access_token, _ = get_access_token()
-    zendesk_article_body = local_article_body
+    progress(f"      Zendesk authentication succeeded ({time.perf_counter() - auth_started:.1f}s).")
 
-    for image in image_entries:
+    zendesk_article_body = local_article_body
+    total = len(image_entries)
+
+    progress(f"[4/5] Uploading {total} screenshot{'s' if total != 1 else ''} to Zendesk Guide Media...")
+
+    for index, image in enumerate(image_entries, start=1):
         filename = image["output"]
         image_path = images_dir / filename
+        step = image.get("step")
+        step_label = f"Step {step}" if step else filename
+        upload_started = time.perf_counter()
+
+        progress(f"      [{index}/{total}] Uploading {step_label}: {filename}...")
         media = upload_guide_media(image_path, access_token, content_type="image/png")
 
         media_id = media["id"]
@@ -301,11 +292,15 @@ def upload_images_to_zendesk(
         media_manifest["images"].append(
             {
                 "local_file": f"images/{filename}",
-                "step": image.get("step"),
+                "step": step,
                 "alt": image.get("alt", ""),
                 "zendesk_media_id": media_id,
                 "zendesk_url": media_url,
             }
+        )
+
+        progress(
+            f"            Uploaded successfully ({time.perf_counter() - upload_started:.1f}s)."
         )
 
     media_manifest["image_count"] = len(media_manifest["images"])
@@ -407,6 +402,7 @@ Images are stored in the adjacent <strong>images</strong> folder.
 
 
 def convert_file(source: Path, script_dir: Path) -> Path:
+    started = time.perf_counter()
     source = source.resolve()
 
     if not source.exists():
@@ -415,18 +411,19 @@ def convert_file(source: Path, script_dir: Path) -> Path:
     if source.suffix.lower() not in {".html", ".htm"}:
         raise ValueError(f"Expected an HTML file, got: {source.name}")
 
+    progress("[1/5] Reading and parsing Mimik HTML...")
     raw_html = source.read_text(encoding="utf-8", errors="replace")
     soup = BeautifulSoup(raw_html, "html.parser")
     title = get_article_title(soup, source)
+    progress(f"      Article: {title}")
 
     output_root = script_dir / OUTPUT_ROOT_NAME
     article_dir = output_root / safe_folder_name(title)
     images_dir = article_dir / "images"
     source_dir = article_dir / "source"
 
-    # Replace prior conversion for the same article so reruns stay clean.
-    # The original Mimik export is never modified.
     if article_dir.exists():
+        progress("      Removing previous conversion of this article...")
         shutil.rmtree(article_dir)
 
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -440,28 +437,29 @@ def convert_file(source: Path, script_dir: Path) -> Path:
         "images": [],
     }
 
-    # First build the article with local image paths. This version is retained
-    # for preview.html so the converted package remains visually reviewable.
+    progress("[2/5] Cleaning article and extracting screenshots...")
+    extraction_started = time.perf_counter()
     local_article_body = create_article_body(soup, images_dir, manifest)
+    image_count = len(manifest["images"])
+    progress(
+        f"      Extracted {image_count} screenshot{'s' if image_count != 1 else ''} "
+        f"({time.perf_counter() - extraction_started:.1f}s)."
+    )
 
-    # Then upload the screenshots and create the Zendesk-ready fragment using
-    # the relative /guide-media/... paths returned by Zendesk.
     zendesk_article_body, media_manifest = upload_images_to_zendesk(
         local_article_body,
         images_dir,
         manifest["images"],
     )
 
-    # Keep a copy of the exact source used.
+    progress("[5/5] Writing converted article package...")
     shutil.copy2(source, source_dir / "original.html")
 
-    # Zendesk-ready fragment for the editorial pass and source editor.
     (article_dir / "article-body.html").write_text(
         zendesk_article_body,
         encoding="utf-8",
     )
 
-    # Human-friendly local preview keeps local screenshot references.
     (article_dir / "preview.html").write_text(
         full_preview_html(title, local_article_body),
         encoding="utf-8",
@@ -545,6 +543,7 @@ The original Mimik export was not modified.
         encoding="utf-8",
     )
 
+    progress(f"      Package written successfully ({time.perf_counter() - started:.1f}s total).")
     return article_dir
 
 
@@ -568,13 +567,13 @@ def main() -> int:
 
     for source in sources:
         try:
-            print(f"Converting: {source}")
+            print(f"Converting: {source}", flush=True)
             output = convert_file(source, script_dir)
-            print(f"Completed:  {output}\n")
+            print(f"Completed:  {output}\n", flush=True)
         except Exception as exc:
             failures.append((source, exc))
-            print(f"FAILED: {source}")
-            print(f"Reason: {exc}\n")
+            print(f"FAILED: {source}", flush=True)
+            print(f"Reason: {exc}\n", flush=True)
 
     if failures:
         print("One or more files could not be converted.")
