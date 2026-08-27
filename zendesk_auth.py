@@ -83,6 +83,28 @@ def _safe_error_detail(response: requests.Response, client_secret: str) -> str:
     return detail[:500]
 
 
+def _safe_response_diagnostics(response: requests.Response) -> str:
+    """Return response metadata useful for diagnosing routing without secrets."""
+    header_names = (
+        "Server",
+        "Content-Type",
+        "Location",
+        "WWW-Authenticate",
+        "x-openapi-route-path",
+        "x-zendesk-origin-server",
+        "x-request-id",
+        "cf-ray",
+    )
+
+    parts = [f"URL={response.url}"]
+    for name in header_names:
+        value = response.headers.get(name)
+        if value:
+            parts.append(f"{name}={value}")
+
+    return "; ".join(parts)
+
+
 def get_access_token() -> tuple[str, dict]:
     """Request a short-lived Zendesk OAuth access token.
 
@@ -113,9 +135,11 @@ def get_access_token() -> tuple[str, dict]:
 
     if not response.ok:
         detail = _safe_error_detail(response, config["client_secret"])
+        diagnostics = _safe_response_diagnostics(response)
         suffix = f" Response: {detail}" if detail else ""
         raise ZendeskAuthError(
-            f"Zendesk OAuth request failed with HTTP {response.status_code}.{suffix}"
+            f"Zendesk OAuth request failed with HTTP {response.status_code}.{suffix} "
+            f"Diagnostics: {diagnostics}"
         )
 
     try:
