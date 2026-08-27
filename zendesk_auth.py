@@ -48,8 +48,26 @@ def load_zendesk_config() -> dict[str, str]:
     subdomain = config["subdomain"]
     subdomain = subdomain.removeprefix("https://").removeprefix("http://")
     subdomain = subdomain.split(".", 1)[0].strip("/")
-    config["subdomain"] = subdomain
 
+    if not subdomain:
+        raise ZendeskAuthError("ZENDESK_SUBDOMAIN is empty after normalization.")
+
+    placeholder_prefixes = ("your-", "example-", "sample-")
+    placeholder_values = {
+        "your-subdomain",
+        "example",
+        "example-subdomain",
+        "subdomain",
+        "zendesk-subdomain",
+    }
+    if subdomain.lower().startswith(placeholder_prefixes) or subdomain.lower() in placeholder_values:
+        raise ZendeskAuthError(
+            "ZENDESK_SUBDOMAIN appears to contain a placeholder value. "
+            "Set it to only the real Zendesk subdomain, for example 'acme' for "
+            "https://acme.zendesk.com."
+        )
+
+    config["subdomain"] = subdomain
     return config
 
 
