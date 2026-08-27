@@ -2,8 +2,8 @@
 """
 Mimik HTML Converter
 --------------------
-Converts a Mimik HTML export into a clean, local article package suitable
-for later Zendesk upload.
+Converts a Mimik HTML export into a clean article package, uploads extracted
+screenshots to Zendesk Guide Media, and writes Zendesk-ready article HTML.
 
 Usage:
     python mimik_converter.py "C:\path\to\article.html"
@@ -17,6 +17,7 @@ Output:
         article-body.html
         preview.html
         manifest.json
+        media-manifest.json
         conversion-summary.txt
         images\
         source\
@@ -39,7 +40,7 @@ try:
 except ImportError:
     print("ERROR: BeautifulSoup is required.")
     print("Install dependencies with:")
-    print("    py -m pip install beautifulsoup4 Pillow")
+    print("    py -m pip install -r requirements.txt")
     input("\nPress Enter to close...")
     sys.exit(1)
 
@@ -48,7 +49,18 @@ try:
 except ImportError:
     print("ERROR: Pillow is required.")
     print("Install dependencies with:")
-    print("    py -m pip install beautifulsoup4 Pillow")
+    print("    py -m pip install -r requirements.txt")
+    input("\nPress Enter to close...")
+    sys.exit(1)
+
+try:
+    from zendesk_auth import get_access_token
+    from zendesk_media import upload_guide_media
+except ImportError as exc:
+    print("ERROR: Zendesk helper modules or dependencies could not be loaded.")
+    print("Install dependencies with:")
+    print("    py -m pip install -r requirements.txt")
+    print(f"Details: {exc}")
     input("\nPress Enter to close...")
     sys.exit(1)
 
@@ -140,7 +152,7 @@ def create_article_body(
     manifest: dict,
 ) -> str:
     """
-    Convert Mimik's body into simple article markup.
+    Convert Mimik's body into simple article markup with local image paths.
 
     Supported Mimik blocks:
       - data-block="heading"
@@ -221,9 +233,10 @@ def create_article_body(
 
                 image_meta = decode_data_image(img["src"], dest_path)
                 image_meta["step"] = str(step_num)
+                alt = clean_text(img.get("alt") or f"Step {step_num}")
+                image_meta["alt"] = alt
                 manifest["images"].append(image_meta)
 
-                alt = clean_text(img.get("alt") or f"Step {step_num}")
                 output.append(
                     f'<p class="step-image">'
                     f'<img src="images/{html.escape(dest_name)}" '
@@ -241,6 +254,62 @@ def create_article_body(
         )
 
     return "\n".join(output)
+
+
+def upload_images_to_zendesk(
+    local_article_body: str,
+    images_dir: Path,
+    image_entries: list[dict],
+) -> tuple[str, dict]:
+    """
+    Upload extracted screenshots to Zendesk Guide Media and replace only the
+    local image src values in the Zendesk-ready article body.
+    """
+    media_manifest = {
+        "provider": "Zendesk Guide Media",
+        "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+        "images": [],
+    }
+
+    if not image_entries:
+        media_manifest["image_count"] = 0
+        return local_article_body, media_manifest
+
+    access_token, _ = get_access_token()
+    zendesk_article_body = local_article_body
+
+    for image in image_entries:
+        filename = image["output"]
+        image_path = images_dir / filename
+        media = upload_guide_media(image_path, access_token, content_type="image/png")
+
+        media_id = media["id"]
+        media_url = media["url"]
+        local_src = f"images/{filename}"
+
+        old_src = f'src="{html.escape(local_src)}"'
+        new_src = f'src="{html.escape(media_url)}"'
+
+        if old_src not in zendesk_article_body:
+            raise ValueError(
+                f"Could not find the local image reference for {filename} "
+                "in the generated article body."
+            )
+
+        zendesk_article_body = zendesk_article_body.replace(old_src, new_src, 1)
+
+        media_manifest["images"].append(
+            {
+                "local_file": f"images/{filename}",
+                "step": image.get("step"),
+                "alt": image.get("alt", ""),
+                "zendesk_media_id": media_id,
+                "zendesk_url": media_url,
+            }
+        )
+
+    media_manifest["image_count"] = len(media_manifest["images"])
+    return zendesk_article_body, media_manifest
 
 
 PREVIEW_CSS = r"""
@@ -371,28 +440,45 @@ def convert_file(source: Path, script_dir: Path) -> Path:
         "images": [],
     }
 
-    article_body = create_article_body(soup, images_dir, manifest)
+    # First build the article with local image paths. This version is retained
+    # for preview.html so the converted package remains visually reviewable.
+    local_article_body = create_article_body(soup, images_dir, manifest)
+
+    # Then upload the screenshots and create the Zendesk-ready fragment using
+    # the relative /guide-media/... paths returned by Zendesk.
+    zendesk_article_body, media_manifest = upload_images_to_zendesk(
+        local_article_body,
+        images_dir,
+        manifest["images"],
+    )
 
     # Keep a copy of the exact source used.
     shutil.copy2(source, source_dir / "original.html")
 
-    # Clean fragment for future Zendesk upload/editorial pass.
+    # Zendesk-ready fragment for the editorial pass and source editor.
     (article_dir / "article-body.html").write_text(
-        article_body,
+        zendesk_article_body,
         encoding="utf-8",
     )
 
-    # Human-friendly local preview.
+    # Human-friendly local preview keeps local screenshot references.
     (article_dir / "preview.html").write_text(
-        full_preview_html(title, article_body),
+        full_preview_html(title, local_article_body),
+        encoding="utf-8",
+    )
+
+    (article_dir / "media-manifest.json").write_text(
+        json.dumps(media_manifest, indent=2),
         encoding="utf-8",
     )
 
     manifest["image_count"] = len(manifest["images"])
+    manifest["zendesk_media_count"] = media_manifest["image_count"]
     manifest["output_files"] = [
         "article-body.html",
         "preview.html",
         "manifest.json",
+        "media-manifest.json",
         "conversion-summary.txt",
         "images/",
         "source/original.html",
@@ -417,23 +503,33 @@ Output:
 Screenshots converted:
 {len(manifest["images"])}
 
+Screenshots uploaded to Zendesk Guide Media:
+{media_manifest["image_count"]}
+
 Formatting behavior:
 - Mimik cover/header/footer layout removed.
 - Mimik note/callout box colors removed.
 - Note/callout text preserved as normal body paragraphs.
 - Step descriptions and screenshot order preserved.
 - Embedded screenshots converted to PNG.
+- Screenshots uploaded to Zendesk Guide Media.
+- article-body.html uses the Zendesk /guide-media/... image paths.
+- preview.html continues to use the local PNG copies for visual review.
 
 Files:
 - preview.html
     Open this in a browser to review the cleaned article locally.
 
 - article-body.html
-    Clean article-body fragment intended for editorial cleanup and the
-    future Zendesk uploader.
+    Zendesk-ready article-body fragment using Zendesk Guide Media image paths.
 
 - images\\
-    Screenshots extracted from the Mimik export and converted to PNG.
+    Local copies of screenshots extracted from the Mimik export and converted
+    to PNG. These are retained for visual review and ChatGPT editorial cleanup.
+
+- media-manifest.json
+    Mapping between each local screenshot, its step/alt text, Zendesk media ID,
+    and the Zendesk image path used by article-body.html.
 
 - manifest.json
     Machine-readable conversion details.
