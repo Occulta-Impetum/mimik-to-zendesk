@@ -4,6 +4,9 @@
 # Generated output
 Converted Mimik HTML/
 
+# Test
+test-image.png
+
 # Python
 __pycache__/
 *.pyc
