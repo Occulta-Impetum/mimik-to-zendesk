@@ -221,6 +221,20 @@ The current editorial workflow is:
 
 Keeping the local screenshots in the package allows the editorial step to visually verify that each instruction still corresponds to the correct screenshot while leaving the Zendesk-hosted image path untouched.
 
+### ChatGPT editor instructions
+
+The canonical ChatGPT Project instructions are stored in:
+
+```text
+CHATGPT_EDITOR_INSTRUCTIONS.txt
+```
+
+The file is plain text so its contents can be copied directly into the ChatGPT Project Instructions field without relying on Markdown formatting.
+
+Keep this repository copy as the source of truth for the editorial prompt. If the ChatGPT Project instructions are changed, update `CHATGPT_EDITOR_INSTRUCTIONS.txt` as well so the instructions remain versioned with the converter.
+
+A shared ChatGPT Project may also be used to distribute the configured editor to other technicians, but the repository copy should still be maintained so the workflow does not depend on one ChatGPT Project configuration.
+
 ## Re-running an article
 
 If an output folder with the same article title already exists, the converter replaces the local converted folder with a fresh conversion.
