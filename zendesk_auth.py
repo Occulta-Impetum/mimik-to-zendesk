@@ -60,15 +60,19 @@ def _safe_error_detail(response: requests.Response, client_secret: str) -> str:
     try:
         body = response.json()
         if isinstance(body, dict):
-            candidates = [
-                body.get("error_description"),
-                body.get("description"),
-                body.get("message"),
-                body.get("error"),
-            ]
-            detail = next((str(value) for value in candidates if value), "")
-            if not detail and body:
-                detail = str(body)
+            error = body.get("error")
+            description = body.get("error_description")
+            if error and description:
+                detail = f"{error}: {description}"
+            elif description:
+                detail = str(description)
+            elif error:
+                detail = str(error)
+            else:
+                candidates = [body.get("description"), body.get("message")]
+                detail = next((str(value) for value in candidates if value), "")
+                if not detail and body:
+                    detail = str(body)
     except ValueError:
         detail = (response.text or "").strip()
 
@@ -96,9 +100,13 @@ def get_access_token() -> tuple[str, dict]:
     }
 
     try:
-        # Zendesk's current OAuth migration guide shows client-credentials
-        # parameters submitted as form data.
-        response = requests.post(token_url, data=payload, timeout=REQUEST_TIMEOUT)
+        # Zendesk's grant-type token API requires a JSON request body.
+        response = requests.post(
+            token_url,
+            json=payload,
+            headers={"Accept": "application/json"},
+            timeout=REQUEST_TIMEOUT,
+        )
     except requests.RequestException as exc:
         raise ZendeskAuthError(f"Could not contact Zendesk: {exc}") from exc
 
