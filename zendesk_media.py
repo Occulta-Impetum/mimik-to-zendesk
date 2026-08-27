@@ -11,6 +11,7 @@ Authentication is handled separately by zendesk_auth.py.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,23 @@ def _resolve_subdomain(subdomain: str | None) -> str:
     return load_zendesk_config()["subdomain"]
 
 
+def _normalize_upload_headers(value: Any) -> dict[str, str] | None:
+    """Normalize Zendesk upload headers returned as an object or JSON string."""
+    if isinstance(value, dict):
+        return {str(key): str(item) for key, item in value.items()}
+
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(decoded, dict):
+            return {str(key): str(item) for key, item in decoded.items()}
+
+    return None
+
+
 def request_upload_url(
     access_token: str,
     *,
@@ -137,24 +155,25 @@ def request_upload_url(
         )
 
     # Zendesk's published example shows upload headers at the response root.
-    # Some accounts currently return them inside upload_url instead. Accept
-    # either shape and normalize to data["headers"] for the upload step.
-    headers = data.get("headers")
-    if not isinstance(headers, dict):
-        nested_headers = upload_info.get("headers")
-        if isinstance(nested_headers, dict):
-            headers = nested_headers
-            data["headers"] = nested_headers
+    # Some accounts return them inside upload_url, and some serialize that
+    # nested headers object as a JSON string. Accept all observed shapes and
+    # normalize to data["headers"] for the upload step.
+    headers = _normalize_upload_headers(data.get("headers"))
+    if headers is None:
+        headers = _normalize_upload_headers(upload_info.get("headers"))
 
-    if not isinstance(headers, dict):
+    if headers is None:
         top_level_keys = ", ".join(sorted(str(key) for key in data.keys()))
         upload_keys = ", ".join(sorted(str(key) for key in upload_info.keys()))
+        nested_type = type(upload_info.get("headers")).__name__
         raise ZendeskMediaError(
-            "Zendesk Guide Media response did not contain upload headers. "
+            "Zendesk Guide Media response contained upload headers in an unsupported format. "
             f"Top-level keys: {top_level_keys or '(none)'}. "
-            f"upload_url keys: {upload_keys or '(none)'} ."
+            f"upload_url keys: {upload_keys or '(none)'}. "
+            f"headers type: {nested_type}."
         )
 
+    data["headers"] = headers
     return data
 
 
