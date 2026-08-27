@@ -170,10 +170,6 @@ def request_upload_url(
             "Zendesk Guide Media response did not contain asset_upload_id."
         )
 
-    # Zendesk's published example shows upload headers at the response root.
-    # Some accounts return them inside upload_url, and some serialize that
-    # nested headers object as a JSON string. Accept all observed shapes and
-    # normalize to data["headers"] for the upload step.
     headers = _normalize_upload_headers(data.get("headers"))
     if headers is None:
         headers = _normalize_upload_headers(upload_info.get("headers"))
@@ -218,7 +214,6 @@ def upload_file_to_provisioned_url(
                 timeout=REQUEST_TIMEOUT,
             )
     except requests.RequestException as exc:
-        # Do not include the pre-signed upload URL in exceptions or logs.
         raise ZendeskMediaError(
             "Could not upload image bytes to Zendesk-hosted storage."
         ) from exc
@@ -274,13 +269,16 @@ def create_guide_media(
             f"Structure: {_safe_structure(data)}"
         )
 
-    # Zendesk's documentation says this response contains id and url at the
-    # top level. If the tenant returns a different shape, report only the JSON
-    # structure so we can reconcile it with the documented response without
-    # exposing media URLs or other response values.
-    if not data.get("url"):
+    # Zendesk's tenant response wraps the Guide Media object in a top-level
+    # "media" property. Normalize that wrapper away so callers consistently
+    # receive the actual Guide Media object with id, url, name, etc.
+    media = data.get("media")
+    if isinstance(media, dict):
+        data = media
+
+    if not data.get("id") or not data.get("url"):
         raise ZendeskMediaError(
-            "Zendesk Guide Media response did not contain the documented top-level media URL. "
+            "Zendesk Guide Media response did not contain a usable media object. "
             f"Response structure: {_safe_structure(data)}"
         )
 
