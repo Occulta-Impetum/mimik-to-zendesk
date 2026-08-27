@@ -123,8 +123,6 @@ def request_upload_url(
         ) from exc
 
     upload_info = data.get("upload_url")
-    headers = data.get("headers")
-
     if not isinstance(upload_info, dict):
         raise ZendeskMediaError(
             "Zendesk Guide Media response did not contain upload_url details."
@@ -137,9 +135,24 @@ def request_upload_url(
         raise ZendeskMediaError(
             "Zendesk Guide Media response did not contain asset_upload_id."
         )
+
+    # Zendesk's published example shows upload headers at the response root.
+    # Some accounts currently return them inside upload_url instead. Accept
+    # either shape and normalize to data["headers"] for the upload step.
+    headers = data.get("headers")
     if not isinstance(headers, dict):
+        nested_headers = upload_info.get("headers")
+        if isinstance(nested_headers, dict):
+            headers = nested_headers
+            data["headers"] = nested_headers
+
+    if not isinstance(headers, dict):
+        top_level_keys = ", ".join(sorted(str(key) for key in data.keys()))
+        upload_keys = ", ".join(sorted(str(key) for key in upload_info.keys()))
         raise ZendeskMediaError(
-            "Zendesk Guide Media response did not contain upload headers."
+            "Zendesk Guide Media response did not contain upload headers. "
+            f"Top-level keys: {top_level_keys or '(none)'}. "
+            f"upload_url keys: {upload_keys or '(none)'} ."
         )
 
     return data
