@@ -45,13 +45,38 @@ def load_zendesk_config() -> dict[str, str]:
             "Zendesk configuration is incomplete. Missing: " + ", ".join(missing)
         )
 
-    # Accept either just the subdomain or an accidentally pasted Zendesk URL.
     subdomain = config["subdomain"]
     subdomain = subdomain.removeprefix("https://").removeprefix("http://")
     subdomain = subdomain.split(".", 1)[0].strip("/")
     config["subdomain"] = subdomain
 
     return config
+
+
+def _safe_error_detail(response: requests.Response, client_secret: str) -> str:
+    """Return useful Zendesk error text without exposing credentials."""
+    detail = ""
+
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            candidates = [
+                body.get("error_description"),
+                body.get("description"),
+                body.get("message"),
+                body.get("error"),
+            ]
+            detail = next((str(value) for value in candidates if value), "")
+            if not detail and body:
+                detail = str(body)
+    except ValueError:
+        detail = (response.text or "").strip()
+
+    if client_secret and detail:
+        detail = detail.replace(client_secret, "[REDACTED]")
+
+    detail = " ".join(detail.split())
+    return detail[:500]
 
 
 def get_access_token() -> tuple[str, dict]:
@@ -71,22 +96,17 @@ def get_access_token() -> tuple[str, dict]:
     }
 
     try:
-        response = requests.post(token_url, json=payload, timeout=REQUEST_TIMEOUT)
+        # Zendesk's current OAuth migration guide shows client-credentials
+        # parameters submitted as form data.
+        response = requests.post(token_url, data=payload, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as exc:
         raise ZendeskAuthError(f"Could not contact Zendesk: {exc}") from exc
 
     if not response.ok:
-        # Do not include the request payload or any credential values in errors.
-        detail = ""
-        try:
-            body = response.json()
-            detail = body.get("error_description") or body.get("error") or ""
-        except ValueError:
-            detail = ""
-
-        suffix = f" ({detail})" if detail else ""
+        detail = _safe_error_detail(response, config["client_secret"])
+        suffix = f" Response: {detail}" if detail else ""
         raise ZendeskAuthError(
-            f"Zendesk OAuth request failed with HTTP {response.status_code}{suffix}."
+            f"Zendesk OAuth request failed with HTTP {response.status_code}.{suffix}"
         )
 
     try:
