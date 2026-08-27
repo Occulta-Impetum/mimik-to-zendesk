@@ -1,4 +1,4 @@
-beautifulsoup4
-Pillow
-requests
-python-dotenv
+beautifulsoup4>=4.12
+Pillow>=10.0
+requests>=2.31
+python-dotenv>=1.0
