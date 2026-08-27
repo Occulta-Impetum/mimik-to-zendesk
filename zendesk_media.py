@@ -97,6 +97,22 @@ def _normalize_upload_headers(value: Any) -> dict[str, str] | None:
     return None
 
 
+def _safe_structure(value: Any, *, max_depth: int = 2) -> str:
+    """Describe JSON response structure without including response values."""
+    def describe(item: Any, depth: int) -> Any:
+        if isinstance(item, dict):
+            if depth >= max_depth:
+                return {str(key): type(val).__name__ for key, val in item.items()}
+            return {str(key): describe(val, depth + 1) for key, val in item.items()}
+        if isinstance(item, list):
+            if not item:
+                return []
+            return [describe(item[0], depth + 1)]
+        return type(item).__name__
+
+    return json.dumps(describe(value, 0), sort_keys=True)
+
+
 def request_upload_url(
     access_token: str,
     *,
@@ -252,9 +268,20 @@ def create_guide_media(
             "Zendesk returned an invalid Guide Media creation response."
         ) from exc
 
+    if not isinstance(data, dict):
+        raise ZendeskMediaError(
+            "Zendesk Guide Media creation returned an unexpected JSON type. "
+            f"Structure: {_safe_structure(data)}"
+        )
+
+    # Zendesk's documentation says this response contains id and url at the
+    # top level. If the tenant returns a different shape, report only the JSON
+    # structure so we can reconcile it with the documented response without
+    # exposing media URLs or other response values.
     if not data.get("url"):
         raise ZendeskMediaError(
-            "Zendesk Guide Media response did not contain a media URL."
+            "Zendesk Guide Media response did not contain the documented top-level media URL. "
+            f"Response structure: {_safe_structure(data)}"
         )
 
     return data
