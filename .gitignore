@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Generated output
+Converted Mimik HTML/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
