@@ -106,6 +106,7 @@ def get_access_token() -> tuple[str, dict]:
             json=payload,
             headers={"Accept": "application/json"},
             timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
         )
     except requests.RequestException as exc:
         raise ZendeskAuthError(f"Could not contact Zendesk: {exc}") from exc
